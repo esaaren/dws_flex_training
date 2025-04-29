@@ -1,0 +1,50 @@
+ARG BASE_IMAGE=nvcr.io/nvidia/pytorch:25.01-py3
+FROM ${BASE_IMAGE}
+
+# https://docs.nvidia.com/deeplearning/frameworks/pytorch-release-notes/index.html
+# https://catalog.ngc.nvidia.com/orgs/nvidia/containers/pytorch/tags
+# 25.01 ships with cuda 12.8 and nccl 2.25.1 which lines up with the default driver + nccl setup for a3 ultra (cuda 12.8, driver 570 and nccl 2.25.1)
+# be careful cause for ex. Release 25.02 is based on CUDA 12.8.0.38 <-- needs to exactly be 12.8 or there will be fwd compatibility issues
+
+# WORKS WITH 
+# NVIDIA-SMI 570.124.06             Driver Version: 570.124.06     CUDA Version: 12.8
+
+
+# Set the working directory to /app
+WORKDIR /app
+
+# Copy all files
+COPY . .
+
+
+# TODO: Move this to just the K8s job manifest because then we can unify the images
+ENV LD_LIBRARY_PATH="${LD_LIBRARY_PATH}:/usr/local/nvidia/lib64"
+ENV NCCL_FASTRAK_CTRL_DEV=eth0
+ENV NCCL_FASTRAK_IFNAME=eth1,eth2,eth3,eth4,eth5,eth6,eth7,eth8
+ENV NCCL_SOCKET_IFNAME=eth0
+ENV NCCL_CROSS_NIC=0
+ENV NCCL_ALGO="Ring,Tree"
+ENV NCCL_PROTO=Simple
+ENV NCCL_MIN_NCHANNELS=4
+ENV NCCL_TUNER_PLUGIN=libnccl-tuner.so
+ENV NCCL_TUNER_CONFIG_PATH=/usr/local/nvidia/lib64/a3plus_tuner_config.textproto
+ENV NCCL_SHIMNET_GUEST_CONFIG_CHECKER_CONFIG_FILE=/usr/local/nvidia/lib64/a3plus_guest_config.textproto
+ENV NCCL_DYNAMIC_CHUNK_SIZE=524288
+ENV NCCL_P2P_NET_CHUNKSIZE=524288
+ENV NCCL_P2P_PCI_CHUNKSIZE=524288
+ENV NCCL_P2P_NVL_CHUNKSIZE=1048576
+ENV NCCL_FASTRAK_NUM_FLOWS=2
+ENV NCCL_FASTRAK_USE_SNAP=1
+ENV NCCL_FASTRAK_PLUGIN_ACCEPT_TIMEOUT_MS=600000
+ENV NCCL_FASTRAK_ENABLE_CONTROL_CHANNEL=0
+ENV NCCL_BUFFSIZE=8388608
+ENV CUDA_VISIBLE_DEVICES=0,1,2,3,4,5,6,7
+ENV NCCL_NET_GDR_LEVEL=PIX
+ENV NCCL_FASTRAK_ENABLE_HOTPATH_LOGGING=0
+ENV NCCL_FASTRAK_USE_LLCM=1
+ENV NCCL_NVLS_ENABLE=0
+ENV NCCL_DEBUG=WARN
+ENV NCCL_DEBUG_SUBSYS=INIT,NET,ENV,COLL,GRAPH
+
+# Install any needed packages specified in requirements.txt
+RUN pip3 install --trusted-host pypi.python.org -r requirements.torch

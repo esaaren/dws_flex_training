@@ -1,0 +1,9 @@
+datasets==3.5.0
+transformers==4.45.2
+tqdm
+peft==0.15.1
+wandb==0.19.9
+pandas==2.2.3
+bitsandbytes==0.45.5
+huggingface-hub==0.29.3
+hf_transfer==0.1.9

@@ -1,0 +1,210 @@
+# Copyright 2025 Google Inc. All rights reserved.
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+apiVersion: v1
+kind: Service
+metadata:
+  name: headless-svc
+spec:
+  clusterIP: None # clusterIP must be None to create a headless service
+  selector:
+    job-name: torch-job # must match Job name
+  ports:
+  - protocol: TCP
+    port: 29400
+    targetPort: 29400
+---
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: torch-job
+  labels:
+    app: torch-job
+spec:
+  parallelism: 2
+  completions: 2
+  backoffLimit: 4
+  completionMode: Indexed
+  template:
+    metadata:
+      annotations:
+        gke-gcsfuse/volumes: "true"
+        gke-gcsfuse/cpu-limit: "0"
+        gke-gcsfuse/memory-limit: "0"
+        gke-gcsfuse/ephemeral-storage-limit: "0"
+        autoscaling.x-k8s.io/consume-provisioning-request: provreq-gpu
+        autoscaling.x-k8s.io/provisioning-class-name: "queued-provisioning.gke.io"
+        devices.gke.io/container.tcpxo-daemon: |+
+          - path: /dev/nvidia0
+          - path: /dev/nvidia1
+          - path: /dev/nvidia2
+          - path: /dev/nvidia3
+          - path: /dev/nvidia4
+          - path: /dev/nvidia5
+          - path: /dev/nvidia6
+          - path: /dev/nvidia7
+          - path: /dev/nvidiactl
+          - path: /dev/nvidia-uvm
+          - path: /dev/dmabuf_import_helper
+        networking.gke.io/default-interface: 'eth0'
+        networking.gke.io/interfaces: |
+          [
+            {"interfaceName":"eth0","network":"default"},
+            {"interfaceName":"eth1","network":"vpc1"},
+            {"interfaceName":"eth2","network":"vpc2"},
+            {"interfaceName":"eth3","network":"vpc3"},
+            {"interfaceName":"eth4","network":"vpc4"},
+            {"interfaceName":"eth5","network":"vpc5"},
+            {"interfaceName":"eth6","network":"vpc6"},
+            {"interfaceName":"eth7","network":"vpc7"},
+            {"interfaceName":"eth8","network":"vpc8"}
+          ]
+      labels:
+        app: torch-job
+    spec:
+      serviceAccountName: erik-ksa
+      hostNetwork: false # Could cause issues with DNS resolution 
+      subdomain: headless-svc
+      restartPolicy: OnFailure
+      containers:
+        - name: tcpxo-daemon
+          image: us-docker.pkg.dev/gce-ai-infra/gpudirect-tcpxo/tcpgpudmarxd-dev:v1.0.14
+          imagePullPolicy: Always
+          command: ["/bin/sh", "-c"]
+          args:
+            - |
+              set -ex
+              chmod 755 /fts/entrypoint_rxdm_container.sh
+              /fts/entrypoint_rxdm_container.sh --num_hops=2 --num_nics=8 --uid=$(POD_NAME) --alsologtostderr
+          securityContext:
+            privileged: true
+          volumeMounts:
+            - name: nvidia-install-dir-host
+              mountPath: /usr/local/nvidia
+            - name: sys
+              mountPath: /hostsysfs
+            - name: proc-sys
+              mountPath: /hostprocsysfs
+          env:
+            - name: LD_LIBRARY_PATH
+              value: /usr/local/nvidia/lib64
+        - name: job
+          image: us-central1-docker.pkg.dev/PROJECT/erik-torch-images/torch-job:latest
+          command: [ "sh" ]
+          args: [ "./torch_dist_launch.sh" ]
+          ports:
+          - containerPort: 29400
+            protocol: TCP
+          env:
+            - name: LD_LIBRARY_PATH
+              value: /usr/local/nvidia/lib64
+            - name: PORT
+              value: "29400"
+            - name: WORLD_SIZE
+              value: "16"
+            - name: NODES
+              value: "2"
+            - name: PROC_PER_NODE
+              value: "8"
+            - name: DATA_PATH
+              value: '/data/training_data'
+            - name: CHECKPOINT_PATH
+              value: '/data/checkpoints'
+            - name: DATASET_NAME
+              value: "dair-ai/emotion"
+            - name: DATA_SPLIT_TRAIN
+              value: 'train'
+            - name: DATA_SPLIT_EVAL
+              value: 'validation'
+            - name: DATA_SUBSET
+              value: 'split'
+            - name: SEQUENCE_LENGTH
+              value: "315"
+            - name: TOKENIZER_BATCH_SIZE
+              value: "10000"
+            - name: GLOBAL_BATCH_SIZE
+              value: "32"
+            - name: EPOCHS
+              value: "1"
+            - name: GRAD_ACC_STEPS
+              value: "1"
+            - name: MODEL_NAME
+              value: "meta-llama/Llama-3.1-8B"
+            - name: USE_PEFT
+              value: "False"
+            - name: CHECKPOINT_EPOCHS
+              value: "1"
+            - name: TOKENIZER_NUM_PROC
+              value: "100"
+            - name: RELOAD_CHECKPOINT
+              value: "None"
+            - name: JOB_ID
+              value: "123"
+            - name: MASTER_ENDPOINT
+              value: "torch-job-0.headless-svc:29400"
+            - name: PYTORCH_SCRIPT_NAME
+              value: "fsdp.py" # Update the script you want to run in here 
+            - name: NCCL_FASTRAK_LLCM_DEVICE_DIRECTORY
+              value: /dev/aperture_devices
+            - name: HF_HOME
+              value: "/data"
+            - name: HUGGING_FACE_HUB_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: hf-secret
+                  key: hf_api_token
+          securityContext:
+            privileged: true
+          volumeMounts:
+            - name: nvidia-install-dir-host
+              mountPath: /usr/local/nvidia
+            - name: shared-memory
+              mountPath: /dev/shm
+            - name: aperture-devices
+              mountPath: /dev/aperture_devices
+            - name: gcs-fuse-csi-ephemeral
+              mountPath: /data
+          resources:
+            limits:
+              nvidia.com/gpu: 8
+      volumes:
+        - name: nvidia-install-dir-host
+          hostPath:
+            path: /home/kubernetes/bin/nvidia
+        - name: shared-memory
+          emptyDir:
+            medium: "Memory"
+            sizeLimit: 1Gi
+        - name: libraries
+          hostPath:
+            path: /home/kubernetes/bin/nvidia/lib64
+        - name: sys
+          hostPath:
+            path: /sys
+        - name: proc-sys
+          hostPath:
+            path: /proc/sys
+        - name: aperture-devices
+          hostPath:
+            path: /dev/aperture_devices
+        - name: gke-gcsfuse-cache
+          emptyDir:
+            medium: Memory
+        - name: gcs-fuse-csi-ephemeral
+          csi:
+            driver: gcsfuse.csi.storage.gke.io
+            volumeAttributes:
+              bucketName: erik-mega-training
+              mountOptions: "implicit-dirs,file-cache:enable-parallel-downloads:true,file-cache:parallel-downloads-per-file:100,file-cache:max-parallel-downloads:-1,file-cache:download-chunk-size-mb:10,file-cache:max-size-mb:-1"
+        
