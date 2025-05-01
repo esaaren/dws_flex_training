@@ -32,9 +32,9 @@ metadata:
   labels:
     app: torch-job
 spec:
-  parallelism: 2
-  completions: 2
-  backoffLimit: 4
+  parallelism: 4
+  completions: 4
+  backoffLimit: 0
   completionMode: Indexed
   template:
     metadata:
@@ -100,7 +100,7 @@ spec:
             - name: LD_LIBRARY_PATH
               value: /usr/local/nvidia/lib64
         - name: job
-          image: us-central1-docker.pkg.dev/PROJECT/erik-torch-images/torch-job:latest
+          image: us-east4-docker.pkg.dev/PROjECT/erik-torch-images/torch-mega-job:latest
           command: [ "sh" ]
           args: [ "./torch_dist_launch.sh" ]
           ports:
@@ -112,11 +112,18 @@ spec:
             - name: PORT
               value: "29400"
             - name: WORLD_SIZE
-              value: "16"
+              value: "32"
             - name: NODES
-              value: "2"
+              value: "4"
             - name: PROC_PER_NODE
               value: "8"
+            - name: JOB_ID
+              value: "123"
+            - name: MASTER_ENDPOINT
+              value: "torch-job-0.headless-svc:29400"
+            - name: PYTORCH_SCRIPT_NAME
+              value: "fsdp.py" # Update the script you want to run in here 
+            # Data settings 
             - name: DATA_PATH
               value: '/data/training_data'
             - name: CHECKPOINT_PATH
@@ -127,38 +134,62 @@ spec:
               value: 'train'
             - name: DATA_SPLIT_EVAL
               value: 'validation'
+            - name: DATA_SPLIT_TEST
+              value: 'test'
             - name: DATA_SUBSET
               value: 'split'
+            # Other settings 
+            - name: TEST_AFTER_TRAINING
+              value: 'True'
+            - name: BATCH_LOG_INTERVAL
+              value: "100"
+            # Tokenizer settings 
             - name: SEQUENCE_LENGTH
-              value: "315"
+              value: "316"
             - name: TOKENIZER_BATCH_SIZE
               value: "10000"
-            - name: GLOBAL_BATCH_SIZE
-              value: "32"
-            - name: EPOCHS
-              value: "1"
-            - name: GRAD_ACC_STEPS
-              value: "1"
-            - name: MODEL_NAME
-              value: "meta-llama/Llama-3.1-8B"
-            - name: USE_PEFT
-              value: "False"
-            - name: CHECKPOINT_EPOCHS
-              value: "1"
             - name: TOKENIZER_NUM_PROC
               value: "100"
+            # Model settings 
+            - name: MODEL_NAME
+              value: "meta-llama/Llama-3.1-8B"
+            - name: BATCH_SIZE
+              value: "16"
+            - name: EPOCHS
+              value: "30"
+            - name: WARMUP
+              value: "0.1"
+            - name: LEARNING_RATE
+              value: "0.00002"
+            - name: WEIGHT_DECAY
+              value: "0.01"
+            - name: GRAD_ACC_STEPS
+              value: "1"
+            - name: GRAD_CHECKPOINTING_ENABLE
+              value: "False"
+            # PEFT settings 
+            - name: USE_PEFT
+              value: "False"
+            - name: PEFT_R
+              value: "16"
+            - name: PEFT_ALPHA
+              value: "32"
+            - name: PEFT_DROPOUT
+              value: "0.05"
+            # Checkpointing 
+            - name: CHECKPOINT_EPOCHS
+              value: "5"
             - name: RELOAD_CHECKPOINT
-              value: "None"
-            - name: JOB_ID
-              value: "123"
-            - name: MASTER_ENDPOINT
-              value: "torch-job-0.headless-svc:29400"
-            - name: PYTORCH_SCRIPT_NAME
-              value: "fsdp.py" # Update the script you want to run in here 
-            - name: NCCL_FASTRAK_LLCM_DEVICE_DIRECTORY
-              value: /dev/aperture_devices
+              value: "None" # Should be the epoch value e.g "1" or "None"
+            # Hugging face home 
             - name: HF_HOME
               value: "/data"
+            - name: NCCL_DEBUG # NCCL debug setting
+              value: "ERROR"
+            - name: NCCL_DEBUG_SUBSYS # NCCL debug setting 
+              value: "INIT,NET,ENV,COLL,GRAPH"
+            - name: NCCL_FASTRAK_LLCM_DEVICE_DIRECTORY
+              value: /dev/aperture_devices
             - name: HUGGING_FACE_HUB_TOKEN
               valueFrom:
                 secretKeyRef:

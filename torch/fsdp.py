@@ -13,7 +13,6 @@
 # limitations under the License.
 
 
-
 ###########################
 ####### IMPORTS
 ###########################
@@ -27,7 +26,7 @@ import pandas as pd
 from datasets import Dataset
 
 import datasets 
-from datasets import load_dataset
+from datasets import load_dataset 
 
 import torch
 import torch.distributed as dist
@@ -39,18 +38,17 @@ from torch.utils.data.distributed import DistributedSampler
 
 from torch.distributed.fsdp import FullyShardedDataParallel as FSDP
 from torch.distributed.fsdp import StateDictType, ShardingStrategy
-from torch.distributed.fsdp.wrap import (_or_policy, 
+from torch.distributed.fsdp.wrap import (_or_policy, #
                                          lambda_auto_wrap_policy,
                                          transformer_auto_wrap_policy)
-from torch.distributed.fsdp.fully_sharded_data_parallel import CPUOffload #
+from torch.distributed.fsdp.fully_sharded_data_parallel import CPUOffload 
 
 from peft import get_peft_model, LoraConfig, TaskType
 from tqdm.auto import tqdm
-import transformers # Base import 
+import transformers
 from transformers import (AutoConfig, AutoTokenizer, LlamaForCausalLM, 
                           get_linear_schedule_with_warmup)
 from transformers.models.llama.modeling_llama import LlamaDecoderLayer 
-
 
 torch.cuda.memory._record_memory_history(
     max_entries=100000
@@ -62,31 +60,55 @@ logging.basicConfig(level=logging.INFO)
 ####### ENV VARS
 ###########################
 os.environ["TOKENIZERS_PARALLELISM"] = "true"
+
+# data stuff 
+dataset_name=os.environ.get('DATASET_NAME', "dair-ai/emotion")
 data_path = os.environ.get('DATA_PATH', '/home/esaarenvirta/training_data')
 ckpt_path = os.environ.get('CHECKPOINT_PATH', '/home/esaarenvirta/checkpoints')
 data_split_train=os.environ.get('DATA_SPLIT_TRAIN', 'train')
 data_split_eval=os.environ.get('DATA_SPLIT_EVAL', 'validation')
+data_split_test=os.environ.get('DATA_SPLIT_EVAL', 'test')
 data_subset=os.environ.get('DATA_SUBSET', 'split')
 dataset_name=os.environ.get('DATASET_NAME', "dair-ai/emotion")
-max_length=int(os.environ.get('SEQUENCE_LENGTH', 315)) 
+
+# tokenizer stuff 
 tokenizer_batch_size=int(os.environ.get('TOKENIZER_BATCH_SIZE', 10000))
+max_length=int(os.environ.get('SEQUENCE_LENGTH', 325)) # Max size of the dataset we're using is ~300 so we can add some overhead for our formatting
+tokenizer_num_proc=int(os.environ.get('TOKENIZER_NUM_PROC', 100))
+
+# model stuff 
 batch_size=int(os.environ.get('BATCH_SIZE', 8))
-num_epochs=int(os.environ.get('EPOCHS', 10))
+num_epochs=int(os.environ.get('EPOCHS', 5)) # 3 is a good amount of fine tuning, more epochs has more learning, higher hallucinations/overfitting 
 accumulation_steps=int(os.environ.get('GRAD_ACC_STEPS', 1))
 model_name=os.environ.get('MODEL_NAME', "meta-llama/Llama-3.1-8B")
+
+warmup = float(os.environ.get('WARMUP', 0.1))
+learning_rate = float(os.environ.get('LEARNING_RATE', 0.00002)) # Higher for faster training, lower for more stable but more epochs, set between 1e-4 and 5e-5 
+weight_decay= float(os.environ.get('WEIGHT_DECAY', 0.01))
+
+# peft stuff 
 peft=os.environ.get('USE_PEFT', 'False')
 if peft == 'False':
     peft = False
 else:
     peft = True
-checkpoint_epochs=int(os.environ.get('CHECKPOINT_EPOCHS', 10)) 
-tokenizer_num_proc=int(os.environ.get('TOKENIZER_NUM_PROC', 100))
-reload_checkpoint=os.environ.get('RELOAD_CHECKPOINT', None)
-nccl_timeout=int(os.environ.get('NCCL_TIMEOUT', 120))
+grad_checkpointing = os.environ.get('GRAD_CHECKPOINTING_ENABLE', 'False')
+peft_r = int(os.environ.get('PEFT_R', 16))
+peft_alpha = int(os.environ.get('PEFT_ALPHA', 32))
+peft_dropout= float(os.environ.get('PEFT_DROPOUT', 0.05))
+
+# checkpoint stuff 
+checkpoint_epochs=int(os.environ.get('CHECKPOINT_EPOCHS', 1)) # how many epochs should we checkpoint between, 1 will checkpoint at every epoch
+reload_checkpoint=os.environ.get('RELOAD_CHECKPOINT', "None") # Needs to be a string of the folder under ckpt_path e.g "1" or "None"
 if reload_checkpoint == "None":
     reload_checkpoint = None
+
+# others 
+nccl_timeout=int(os.environ.get('NCCL_TIMEOUT', 120))
 batch_log_interval = int(os.environ.get('BATCH_LOG_INTERVAL', 100))
-grad_checkpointing = os.environ.get('GRAD_CHECKPOINTING_ENABLE', 'False')
+test_after_training = os.environ.get('TEST_AFTER_TRAINING', 'True')
+
+
 
 ###########################
 ####### PYTORCH AUTOWRAP POLICY
@@ -125,6 +147,7 @@ def train_fn():
 
     desired_timeout = datetime.timedelta(minutes=nccl_timeout) 
 
+    # Add barrier timeout for when we're processing large pieces of data (or downloading checkpoints)
     dist.init_process_group("nccl", timeout=desired_timeout) 
 
     rank = dist.get_rank()
@@ -136,11 +159,11 @@ def train_fn():
     ###########################
     ####### Model + Tokenizer Download 
     ###########################
-
-    # Download model / tokenizer on rank 0 so no deadlocks
+    # avoid deadlocks when all ranks download model shards 
     if rank == 0:
         logging.info(f"Rank {rank} downloading model and config...")
 
+        # Tokenizer and model init on rank 0 so no deadlocks when downloading to GCS
         tokenizer = AutoTokenizer.from_pretrained(model_name)
         config = AutoConfig.from_pretrained(model_name)
         _ = LlamaForCausalLM.from_pretrained(
@@ -156,11 +179,12 @@ def train_fn():
     # Tokenizer 
     tokenizer = AutoTokenizer.from_pretrained(model_name)
     tokenizer.pad_token = tokenizer.eos_token
+    tokenizer.padding_side = 'left'
 
     # Tokenizer and text processing functions 
     # Pre-process the data so we create an instruction prompt
     def add_prompt(text):
-        prompt = f"Classify the emotion of this text: {text}, Emotion: "
+        prompt = f"Classify the emotion of this text with a single word only: {text}, Emotion: "
         return prompt
 
     # Input col needs to be called "text"
@@ -184,7 +208,7 @@ def train_fn():
     # Optional PEFT and log trainable params 
     if peft is True:
         peft_config = LoraConfig(
-            task_type=TaskType.CAUSAL_LM, inference_mode=False, r=16, lora_alpha=32, lora_dropout=0.05
+            task_type=TaskType.CAUSAL_LM, inference_mode=False, r=peft_r, lora_alpha=peft_alpha, lora_dropout=peft_dropout
         )
         model = get_peft_model(model, peft_config)
         logging.info(model.print_trainable_parameters())
@@ -205,22 +229,23 @@ def train_fn():
                 CPUOffload(offload_params=False)
             ),
             mixed_precision=
-                 None, # TODO: Implement
+                 None, # TODO: Look into implementing
             sharding_strategy=ShardingStrategy.FULL_SHARD, # It shards the parameters, gradients, and optimizer states across all GPUs.
             device_id=torch.cuda.current_device(),
             limit_all_gathers=True, # Reduces the number of all-gather operations, which can be expensive.
-            sync_module_states=False, 
-            param_init_fn=( 
+            sync_module_states=False, # This is important. Since we're loading the full model initially (on the CPU), we don't want FSDP to try to synchronize module states across processes at this stage. The synchronization will happen naturally during the first forward/backward pass.
+            param_init_fn=( # This is set to None, but the sample template shows an example of how you could use a custom initialization function. We're using on the pretrained weights, so we don't need a custom initialization.
                 (
                     lambda module: module.to_empty(
                         device=torch.device("cuda"), recurse=False
                     )
                 )
-                if False and rank != 0
+                if False and rank != 0 # Set to true if you want to save cpu memory by loading pretrained model on rank0 only
                 else None
             ),
-            use_orig_params=True, 
+            use_orig_params=True, # Keeps a reference to the original parameters.
         )
+    
     
     # Barrier after model loading 
     dist.barrier(device_ids=[local_rank])
@@ -244,13 +269,12 @@ def train_fn():
         if rank == 0:
             print('No training data found, downloading and processing then saving!')
             
-            # TODO: Dataset is technically still hardcoded to dair-ai/emotion via ENV vars 
             dataset_train = load_dataset(dataset_name, data_subset, split=data_split_train)
             dataset_eval = load_dataset(dataset_name, data_subset, split=data_split_eval)
             df_train = pd.DataFrame(dataset_train)
             df_eval = pd.DataFrame(dataset_eval)
 
-            # map the labels 
+            # map the labels TODO: Make this templateable 
             label_mapping = {
                 0: 'sadness',
                 1: 'joy',
@@ -306,16 +330,17 @@ def train_fn():
 
     # Creating sampler + dataloader for eval too
     sampler_eval = sampler = DistributedSampler(loaded_tokenized_dataset_eval, num_replicas=world_size, rank=rank, drop_last=True)
-    eval_dataloader = DataLoader(loaded_tokenized_dataset_eval, batch_size=batch_size, sampler=sampler,
+
+    eval_dataloader = DataLoader(loaded_tokenized_dataset_eval, batch_size=batch_size, sampler=sampler_eval,
                                   shuffle=False, num_workers=0, drop_last=True, pin_memory=False)
     
     # Calc training steps 
     num_training_steps = len(train_dataloader) * num_epochs
 
-    warmup_steps = int(0.1 * num_training_steps)  # 10% warmup
+    warmup_steps = int(warmup * num_training_steps)  
 
     # Optimizer + scheduler 
-    optimizer = AdamW(model.parameters(), lr=2e-5, weight_decay=0.01)  # Example LR and weight decay
+    optimizer = AdamW(model.parameters(), lr=learning_rate, weight_decay=weight_decay) 
     scheduler = get_linear_schedule_with_warmup(
         optimizer, num_warmup_steps=warmup_steps, num_training_steps=num_training_steps
     )
@@ -335,12 +360,12 @@ def train_fn():
             'scheduler': scheduler.state_dict(), 
             'epoch': -1,
         }
-        with FSDP.state_dict_type(model, StateDictType.SHARDED_STATE_DICT):
-            # dc.load automatically loads the sharded states into the provided model/optimizer
-            dc.load(
-                state_dict=state_to_load,
-                checkpoint_id=ckpt_path + f'/{reload_checkpoint}' # Directory to load from
-            )
+       
+        # dc.load automatically loads the sharded states into the provided model/optimizer
+        dc.load(
+            state_dict=state_to_load,
+            checkpoint_id=ckpt_path + f'/{reload_checkpoint}' # Directory to load from
+        )
 
         # Now update your training state from the loaded dict
         scheduler.load_state_dict(state_to_load['scheduler'])
@@ -375,7 +400,7 @@ def train_fn():
             labels = F.pad(labels, (0, 1), mode='constant', value=tokenizer.pad_token_id)
             labels[labels == tokenizer.pad_token_id] = -100
 
-            # Input data to model 
+            # Input data into the model
             out = model(input_ids=batch['input_ids'], attention_mask=batch['attention_mask'], labels=labels)
             loss = out.loss
             loss = loss / accumulation_steps
@@ -433,11 +458,12 @@ def train_fn():
                 outputs = model(input_ids=input_ids, attention_mask=batch['attention_mask'], labels=labels)
                 loss = outputs.loss
 
-                total_eval_loss += loss.item()  
+                total_eval_loss += loss.item()  # item() gets the Python number
                 num_eval_batches += 1
 
                 if rank == 0 and batch_idx % batch_log_interval == 0:
                     logging.info(f"Eval Batch {batch_idx}/{len(eval_dataloader)} Loss: {loss.item():.4f} Time: {time.time() - batch_start_time:.2f}s")
+                # if rank == 0: eval_bar.update(1); eval_bar.set_postfix(loss=loss.item())
 
 
         # Calculate average loss for this rank
@@ -462,7 +488,7 @@ def train_fn():
 
     for i in range(epoch, num_epochs):
 
-        # set epoch on the sampler 
+        # Important to set epoch on data loader sampler #TODO: Does it matter for eval dataloader? 
         train_dataloader.sampler.set_epoch(i)
 
         if rank == 0:
@@ -480,6 +506,7 @@ def train_fn():
         evaluate(model, local_rank, eval_dataloader)
 
         # Check checkpoint epochs against current epoch and save a checkpoint if needed
+        # TODO: Can make a better checkpoint manager  
         if i % checkpoint_epochs == 0 and i != 0:
             state_to_save = {
                 'model': model,  # Pass the FSDP model directly
@@ -487,13 +514,145 @@ def train_fn():
                 'scheduler': scheduler.state_dict(),
                 'epoch': i,
             }
-            with FSDP.state_dict_type(model, StateDictType.SHARDED_STATE_DICT):
-                # dc.save handles coordinating saves across ranks.
-                dc.save(
-                    state_dict=state_to_save,
-                    checkpoint_id=ckpt_path + f"/{epoch}" # Use directory name for id
-                )
+            
+            # dc.save handles coordinating saves across ranks.
+            dc.save(
+                state_dict=state_to_save,
+                checkpoint_id=ckpt_path + f"/{i}" # Use directory name for id
+            )
 
+
+    logging.info("Running final checkpoint against testing data")
+
+
+
+    ###########################
+    ####### Evaluate against the test data 
+    ###########################
+
+    if test_after_training == 'True':
+
+        # Process data like we did with the other datasets
+        if rank == 0:
+            dataset_test = load_dataset(dataset_name, data_subset, split=data_split_test)
+            df_test = pd.DataFrame(dataset_test)
+
+            label_mapping = {
+                0: 'sadness',
+                1: 'joy',
+                2: 'love',
+                3: 'anger',
+                4: 'fear',
+                5: 'surprise'
+            }
+            
+            # Format the prompt and then apply the str version of the labels 
+            df_test['text'] = df_test['text'].apply(add_prompt)
+            df_test['label_text'] = df_test['label'].map(label_mapping)
+
+            dataset_test = Dataset.from_pandas(df_test)
+
+            print(dataset_test[0]['text']) # quick sanity check on formatting 
+            print(dataset_test[0]['label_text']) # quick sanity check on formatting  
+
+
+            tokenized_dataset_test = dataset_test.map(process_text, batch_size=tokenizer_batch_size, num_proc=tokenizer_num_proc, batched=True)
+            tokenized_dataset_test.set_format(type='torch', columns=['input_ids', 'attention_mask', 'label_text']) # Not setting data type to torch is common pitfall
+            tokenized_dataset_test.save_to_disk(data_path + '/test')
+
+            del tokenized_dataset_test
+
+        dist.barrier(device_ids=[local_rank])
+
+        # Load data and sampler/dataloader for the test data
+        loaded_tokenized_dataset_test = datasets.load_from_disk(data_path + "/test")
+        sampler_test = sampler = DistributedSampler(loaded_tokenized_dataset_test, num_replicas=world_size, rank=rank, drop_last=True)
+        test_dataloader = DataLoader(loaded_tokenized_dataset_test, batch_size=batch_size, sampler=sampler_test,
+                                  shuffle=False, num_workers=0, drop_last=True, pin_memory=False)
+    
+        # Can't forget to set eval here 
+        model.eval()
+
+        correct_predictions = 0
+        total_samples = 0
+
+        for batch_idx, batch in enumerate(test_dataloader):
+
+            input_ids = batch['input_ids'].to(local_rank)
+            attention_mask = batch['attention_mask'].to(local_rank)
+            ground_truth_labels_str_list = batch['label_text']
+
+            generated_outputs = model.generate(
+                 input_ids=input_ids, 
+                 attention_mask=attention_mask,
+                 max_new_tokens=5,  # Adjust based on expected label length (e.g., "surprise" is 8 chars)
+                 pad_token_id=tokenizer.pad_token_id,
+                 eos_token_id=tokenizer.eos_token_id,
+                 do_sample=False  # Use greedy decoding for deterministic output
+             )
+            
+            # The generated_outputs contain the prompt + generated tokens.
+            # We need to slice off the prompt part.
+            num_prompt_tokens = batch['input_ids'].shape[1]
+            generated_text_ids = generated_outputs[:, num_prompt_tokens:]
+
+            # Decode the generated tokens
+            decoded_predictions_raw = tokenizer.batch_decode(generated_text_ids, skip_special_tokens=True)
+
+            for i in range(len(decoded_predictions_raw)):
+                raw_prediction = decoded_predictions_raw[i]
+                true_label = ground_truth_labels_str_list[i].strip().lower()
+
+                # Refined extraction of the predicted emotion (first word, cleaned)
+                predicted_emotion_word = ""
+                raw_prediction_stripped = raw_prediction.strip()
+                if raw_prediction_stripped: # If not an empty string after stripping
+                    # Take the first "word"
+                    predicted_emotion_word = raw_prediction_stripped.lower().split(' ')[0]
+                    # Remove common trailing punctuation from the extracted word
+                    predicted_emotion_word = predicted_emotion_word.rstrip(",.!?:;")
+
+                # Sanity check on tuned labels 
+                if rank == 0 and batch_idx < 1 and i < 3:
+                    original_prompt_decoded = tokenizer.decode(input_ids[i], skip_special_tokens=True)
+                    if tokenizer.eos_token: # Clean up prompt for logging if EOS is pad
+                            original_prompt_decoded = original_prompt_decoded.split(tokenizer.eos_token)[0]
+                    #logging.info(f"  Prompt: '{original_prompt_decoded}'")
+                    #logging.info(f"  True Label: '{true_label}'")
+                    #logging.info(f"  Generated (raw full): '{raw_prediction}'")
+                    #logging.info(f"  Extracted Predicted Word: '{predicted_emotion_word}'")
+
+                # Compare the extracted word with the true label
+                if true_label == predicted_emotion_word:
+                    correct_predictions += 1
+         
+
+            total_samples += len(ground_truth_labels_str_list)
+
+        if rank == 0 and (batch_idx + 1) % batch_log_interval == 0:
+             temp_acc = (correct_predictions / total_samples) if total_samples > 0 else 0
+             logging.info(f"Test Accuracy Batch {batch_idx+1}/{len(test_dataloader)}: Temp Accuracy (rank 0): {temp_acc:.4f}")
+
+        # Aggregate results from all processes
+        correct_predictions_tensor = torch.tensor(correct_predictions, dtype=torch.long).to(local_rank)
+        total_samples_tensor = torch.tensor(total_samples, dtype=torch.long).to(local_rank)
+
+        dist.all_reduce(correct_predictions_tensor, op=dist.ReduceOp.SUM)
+        dist.all_reduce(total_samples_tensor, op=dist.ReduceOp.SUM)
+
+        final_accuracy = 0.0
+        total_samples_agg = total_samples_tensor.item()
+        if total_samples_agg > 0:
+            final_accuracy = correct_predictions_tensor.item() / total_samples_agg
+
+        if rank == 0:
+            logging.info(f"--- Test Set Accuracy Results ---")
+            logging.info(f"Total Correct Predictions (aggregated): {correct_predictions_tensor.item()}")
+            logging.info(f"Total Samples (aggregated): {total_samples_agg}")
+            logging.info(f"Final Test Accuracy: {final_accuracy:.4f}")
+
+
+    # Destroy the process group and end the run
     dist.destroy_process_group()
 
 

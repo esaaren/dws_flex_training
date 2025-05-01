@@ -45,7 +45,7 @@ def run_allgather_test():
     print(f"Rank {rank}: Gathered data on GPU = {gather_list}")
     print(f"Rank {rank}: All-gather took {end_time - start_time:.4f} seconds.")
 
-    # Optionally, verify the gathered data
+    # Verify the gathered data
     expected_data = [torch.tensor([i + 1] * 3).cuda(local_rank) for i in range(world_size)]
     if all(torch.equal(g, e) for g, e in zip(gather_list, expected_data)):
         print(f"Rank {rank}: All-gather test passed on GPU!")

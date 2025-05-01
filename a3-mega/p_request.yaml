@@ -20,7 +20,6 @@ metadata:
 template:
   spec:
     nodeSelector:
-      #cloud.google.com/gke-accelerator: "nvidia-h100-mega-80gb"
       cloud.google.com/gke-nodepool: "a3mega-multi-nic-dws"
     tolerations:
     - key: "nvidia.com/gpu"
@@ -48,6 +47,6 @@ spec:
   parameters:
     maxRunDurationSeconds: "7200"
   podSets:
-  - count: 2
+  - count: 4
     podTemplateRef:
       name: pod-template-gpu

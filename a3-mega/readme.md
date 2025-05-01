@@ -9,7 +9,7 @@ export PREFIX="erika3-mega-us-east4"
 export REGION="us-east4"	
 export PROJECT=""	
 export ZONE="us-east4-b"
-export GKE_VERSION=1.31.7-gke.1212000 
+export GKE_VERSION=1.31.7-gke.1265000
 export CLUSTER_NAME="a3-mega-erik"
 export GSBUCKET='erik-mega-training'	
 export PROJECT_NUMBER=$(gcloud projects describe ${PROJECT} --format="value(projectNumber)") && \
@@ -17,6 +17,7 @@ export NAMESPACE='default'
 export KSA_NAME='erik-ksa'
 export HF_TOKEN=
 ```
+
 
 
 # Networking setup 
@@ -66,7 +67,7 @@ kubectl apply -f network.yaml
 # Nodepool setup 
 # NOTE: CHECK DRIVERS https://raw.githubusercontent.com/GoogleCloudPlatform/container-engine-accelerators/master/nvidia-driver-installer/cos/daemonset-preloaded-latest.yaml
 # On GKE 1.32 as of Apr 28 2025 LATEST will get you driver 570 which is CUDA 12.8, DEFAULT gives you 535 which is 12.2 
-# This repo is working with LATEST as of Apr 28
+# This repo is working with LATEST and DEFAULT as of Apr 28
 ```
 gcloud beta container node-pools create a3mega-multi-nic-dws \
     --region ${REGION} \
