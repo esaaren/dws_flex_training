@@ -67,7 +67,6 @@ kubectl apply -f network.yaml
 # Nodepool setup 
 # NOTE: CHECK DRIVERS https://raw.githubusercontent.com/GoogleCloudPlatform/container-engine-accelerators/master/nvidia-driver-installer/cos/daemonset-preloaded-latest.yaml
 # On GKE 1.32 as of Apr 28 2025 LATEST will get you driver 570 which is CUDA 12.8, DEFAULT gives you 535 which is 12.2 
-# This repo is working with LATEST and DEFAULT as of Apr 28
 ```
 gcloud beta container node-pools create a3mega-multi-nic-dws \
     --region ${REGION} \
@@ -124,8 +123,7 @@ gcloud storage buckets add-iam-policy-binding gs://${GSBUCKET} \
 ```
 
 # NCCL plugin
-# NCCL 2.21.5
-# This NCCL release supports CUDA 11.0, CUDA 12.2, CUDA 12.4, CUDA 12.5 and CUDA 12.8.
+# NCCL 2.23.4
 ```
 kubectl apply -f https://raw.githubusercontent.com/GoogleCloudPlatform/container-engine-accelerators/master/gpudirect-tcpxo/nccl-tcpxo-installer.yaml
 kubectl get pods -n=kube-system -l=name=nccl-tcpxo-installer
