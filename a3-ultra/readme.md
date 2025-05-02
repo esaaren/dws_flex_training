@@ -61,9 +61,9 @@ done
 # Create a cluster 
 ```
 gcloud container clusters create ${CLUSTER_NAME} \
-    --region=${REGION}$ \
-    --cluster-version=${CLUSTER_VERSION}$ \
-    --workload-pool=${PROJECT}$.svc.id.goog \
+    --region=${REGION} \
+    --cluster-version=${GKE_VERSION} \
+    --workload-pool=${PROJECT}.svc.id.goog \
     --services-ipv4-cidr=10.65.0.0/19 \
     --cluster-ipv4-cidr=10.64.0.0/19 \
     --enable-dataplane-v2 \
@@ -86,9 +86,9 @@ gcloud container clusters get-credentials ${CLUSTER_NAME} --region ${REGION} --p
 # Create a nodepool
 ```
 gcloud container node-pools create ultra-nodepool-dws \
-    --cluster=${CLUSTER_NAME}$ \
-    --region=${REGION}$ \
-    --node-locations=${ZONE}$ \
+    --cluster=${CLUSTER_NAME} \
+    --region=${REGION} \
+    --node-locations=${ZONE} \
     --machine-type=a3-ultragpu-8g \
     --accelerator=type=nvidia-h200-141gb,count=8,gpu-driver-version=DEFAULT \
     --scopes="https://www.googleapis.com/auth/cloud-platform" \
