@@ -24,15 +24,15 @@ to switch between the two scripts
 ### We can measure the improvement difference on epoch time between infrastructure, for ex: 
 #### Single node H100 training: 
 ```154s``` 
-per epoch at batch size == 8 
+per epoch at local batch size == 8 (Global batch size of 64) 
 
 ### 4 node H100 mega training:
 ```38s```
-per epoch at batch size == 16 
+per epoch at local batch size == 16 (Global batch size of 512)
 
 #### 4 node H200 training (we can fit a larger batch size): 
 ```16s``` 
-per epoch at batch size == 32 
+per epoch at local batch size == 32 (Global batch size of 1024) 
 
 
 ### A sample output after training for 5 epochs with lr==0.00002 and batch==32 on A3-ultra: 
